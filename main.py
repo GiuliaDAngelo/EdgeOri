@@ -27,6 +27,8 @@ import torch.nn as nn
 from scipy.stats import multivariate_normal
 import tensorflow as tf
 from torchvision.utils import save_image
+from scipy import stats
+import math
 
 
 
@@ -164,8 +166,9 @@ if __name__ == "__main__":
     animFLAG = False
     eventframes = preprocess_event_data(sensor_size, time_wnd_frames, event_data, animFLAG)
     eventframes = torch.sum(eventframes, dim=1, keepdim=True)
-    eventframes = eventframes[0:1,0,:,:]
-    # plt.imshow(eventframes[0,0,:,:])
+    #numbers of frames
+    num_frm= 1
+    eventframes = eventframes[0:num_frm,0,:,:]
 
     # Step 3: Gaussian Multivariate Distribution Bank
     # Define a bank of Gaussian distributions with different orientations
@@ -174,26 +177,59 @@ if __name__ == "__main__":
     sigma_x = fltsize/4
     sigma_y = fltsize/8
     # number of angles, please choose an even number
-    numangles=6
-    angles = np.round(np.linspace(0, 180, numangles)).astype(int)
+    numangles=10
+    startangl=0
+    endangl=150
+    angles = np.round(np.linspace(startangl,endangl , numangles)).astype(int)
     show_imgs = False
     bankMVG = bank_MVG(size, sigma_x, sigma_y, angles,show_imgs, numangles)
 
 
     # # Step 4: Convolution and Visualization
     # # Convolve the event map with each Gaussian distribution from the bank and visualize the results
-    maps = torch.empty((len(eventframes),sensor_size[1], sensor_size[0]))
-    for kernel in range(0, len(bankMVG)):
-        for frame in range(0, len(eventframes)):
-            print('convolving kernel ' + str(kernel) + ' frame ' + str(frame) + ' of '+ str(len(eventframes)))
-            convolved_map=torch.from_numpy(conv_vis(eventframes[frame,0,:,:], bankMVG[kernel]))
-            maps[frame,:,:]=convolved_map
-        finalmap=torch.sum(maps, dim=0, keepdim=True)
-        max_val=finalmap.max()
-        plt.imshow(finalmap[0,:,:])
-        plt.imsave('results/img'+str(angles[kernel])+'.png', finalmap[0,:,:])
+    max_val = 0
+    scales = 3
+    anls_maxvals=np.zeros(len(bankMVG))
+    maps = torch.empty((scales,sensor_size[1], sensor_size[0]))
+    for frm in range(0, len(eventframes)):
+        frame = eventframes[frm]
+        for kernel in range(0, len(bankMVG)):
+            plt.figure()
+            print('convolving kernel ' + str(kernel) + ' frame ' + str(frm) + ' of '+ str(len(eventframes)))
+            for scale in range(1,scales+1):
+                print(f"pyramid scale {scale}")
+                res = (int(frame.size()[0]/scale), int(frame.size()[1]/scale))
+                frame_curr = torchvision.transforms.Resize((res[0], res[1]))(frame.unsqueeze(0))
+                convolved_map=torch.from_numpy(conv_vis(frame_curr[0,:,:], bankMVG[kernel]))
+                convolved_map=torchvision.transforms.Resize((int(max_y), int(max_x)))(convolved_map.unsqueeze(0))
+                maps[(scale-1),:,:]=convolved_map[0,:,:]
+            #final map based on one orientation for different scales
+            finalmap=torch.sum(maps, dim=0, keepdim=True)
+            anls_maxvals[kernel]=int(finalmap.max())
+            if anls_maxvals[kernel] > max_val:
+                max_val = anls_maxvals[kernel]
+                ori=angles[kernel]
+            plt.imshow(finalmap[0,:,:], cmap='jet', aspect='auto')
+            plt.colorbar()
+            plt.imsave('results/img'+str(angles[kernel])+'.png', finalmap[0,:,:], cmap='jet')
+        print('WTA: The orientation is close to '+str(ori)+' degrees')
+        softWTA=plt.figure()
+        mus = angles
+        x = np.linspace(startangl-20, endangl+20, 10000)
+        # variance = 40
+        sigma = 10#math.sqrt(variance)
+        pdf = np.zeros(shape=x.shape)
+        cnt=0
+        for m in zip(mus):
+            pdf += stats.norm.pdf(x, m, sigma)*anls_maxvals[cnt]
+            # plt.plot(x, stats.norm.pdf(x, m, sigma)*anls_maxvals[cnt],label='Angle '+str(angles[cnt]))
+            cnt+=1
+        plt.plot(x, pdf)
+        plt.legend()
+        plt.xlabel('Angle degrees °')
+        plt.ylabel('Orientation kernels response')
+        #find maximum
+        maxsoft=np.where(pdf == pdf.max())[0][0]
+        print('softWTA: The orientation is close to ' + str(x[maxsoft]) + ' degrees')
+        # plt.savefig('results/softWTA.png')
 
-    # Example usage
-    angles = np.array([0, 45, 90, 135])  # Edge orientations in degrees
-    activations = np.array([0.7, 0.2, 0.5, 0.4])  # Neuronal activations
-    threshold = 30  # Threshold for considering angles close enough
